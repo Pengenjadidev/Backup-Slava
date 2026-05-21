@@ -50,9 +50,6 @@ SUPPORTED_FIAT = {
 # ==============================
 
 def cmc_get_price(symbol: str, fiat: str) -> dict | None:
-    """
-    Ambil harga langsung dari CMC by symbol.
-    """
     try:
         resp = cmc_get("/cryptocurrency/quotes/latest", {
             "symbol": symbol.upper(),
@@ -95,9 +92,6 @@ def cmc_get_price(symbol: str, fiat: str) -> dict | None:
 
 
 def cmc_search_by_name(query: str, fiat: str) -> dict | None:
-    """
-    Fallback: cari coin by nama via /map endpoint jika symbol tidak ketemu.
-    """
     try:
         resp = cmc_get("/cryptocurrency/map", {
             "listing_status": "active",
@@ -122,80 +116,69 @@ def cmc_search_by_name(query: str, fiat: str) -> dict | None:
 
 
 def get_price(query: str, fiat: str) -> dict | None:
-    """
-    Resolve harga coin dari CoinMarketCap.
-    """
     data = cmc_get_price(query, fiat)
     if data:
         return data
-
-    logger.info(f"Symbol lookup miss for '{query}', trying name search...")
     data = cmc_search_by_name(query, fiat)
-    if data:
-        return data
-
-    return None
+    return data
 
 # ==============================
 # HELPERS
 # ==============================
 
 def format_number(n: float) -> str:
-    """Format angka tanpa simbol mata uang di depan"""
     if n == 0:
         return "0"
     elif n >= 1000:
-        return f"{n:,.0f}".replace(",", ".")
+        return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     elif n >= 1:
-        return f"{n:,.2f}".replace(",", ".")
+        return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     elif n >= 0.0001:
-        return f"{n:.6f}"
+        return f"{n:.6f}".replace(".", ",")
     else:
-        return f"{n:.10f}"
+        return f"{n:.10f}".replace(".", ",")
 
 def format_change(change: float) -> str:
-    """Format perubahan 24h tanpa emotikon"""
     sign = "+" if change >= 0 else ""
     return f"{sign}{change:.2f}%"
 
+def safe_eval(expr: str):
+    """Evaluasi aritmatika sederhana dengan aman"""
+    expr = expr.replace(",", ".")
+    # Hanya izinkan angka dan operator dasar
+    if not re.match(r'^[0-9.+\-*/\s()]+$', expr):
+        return None
+    try:
+        # Gunakan eval dengan namespace terbatas
+        result = eval(expr, {"__builtins__": None}, {})
+        return float(result)
+    except:
+        return None
+
 def parse_arithmetic_query(text: str):
     """
-    Parse query dengan operasi aritmatika.
+    Parse query dengan operasi aritmatika: <expr> <coin> [fiat]
     """
     text = text.strip().lower()
-    pattern = r'^(\d+(?:[.,]\d+)?)\s*([+\-*/])\s*(\d+(?:[.,]\d+)?)\s+([a-z0-9\-]+)(?:\s+([a-z]+))?$'
+    # Mencari ekspresi matematika di awal
+    pattern = r'^([0-9.+\-*/\s()]+)\s+([a-z0-9\-]+)(?:\s+([a-z]+))?$'
     match = re.match(pattern, text)
     if not match:
         return None
     
-    num1_str, operator, num2_str, coin_input, fiat_input = match.groups()
+    expr_str, coin_input, fiat_input = match.groups()
+    amount = safe_eval(expr_str)
     
-    try:
-        num1 = float(num1_str.replace(",", "."))
-        num2 = float(num2_str.replace(",", "."))
-        
-        if operator == "+":
-            amount = num1 + num2
-        elif operator == "-":
-            amount = num1 - num2
-        elif operator == "*":
-            amount = num1 * num2
-        elif operator == "/":
-            if num2 == 0:
-                return None
-            amount = num1 / num2
-        else:
-            return None
-        
-        fiat = fiat_input if fiat_input else "usd"
-        if fiat not in SUPPORTED_FIAT:
-            return None
-        if coin_input in SUPPORTED_FIAT:
-            return None
-        
-        return amount, coin_input, fiat
-    except:
+    if amount is None:
         return None
+        
+    fiat = fiat_input if fiat_input else "usd"
+    if fiat not in SUPPORTED_FIAT:
+        return None
+    if coin_input in SUPPORTED_FIAT:
+        return None
+    
+    return amount, coin_input, fiat, expr_str.strip()
 
 def parse_price_query(text: str):
     """Parse: <jumlah> <coin> [fiat]"""
@@ -211,23 +194,19 @@ def parse_price_query(text: str):
         return None
     if coin_input in SUPPORTED_FIAT:
         return None
-    return amount, coin_input, fiat
+    return amount, coin_input, fiat, amount_str
 
 # ==============================
 # CORE HANDLER
 # ==============================
 
-async def handle_price_query(update: Update, amount: float, coin_input: str, fiat: str):
-    msg = await update.message.reply_text(
-        f"Mencari {coin_input.upper()}..."
-    )
+async def handle_price_query(update: Update, amount: float, coin_input: str, fiat: str, original_expr: str):
+    msg = await update.message.reply_text(f"Mencari {coin_input.upper()}...")
 
     data = get_price(coin_input, fiat)
 
     if not data:
-        await msg.edit_text(
-            f"{coin_input.upper()} tidak ditemukan."
-        )
+        await msg.edit_text(f"{coin_input.upper()} tidak ditemukan.")
         return
 
     price = data["price"]
@@ -236,28 +215,34 @@ async def handle_price_query(update: Update, amount: float, coin_input: str, fia
     coin_display = data.get("symbol", coin_input.lower())
     coin_name = data.get("name", coin_display)
 
-    # Format output sangat sederhana sesuai permintaan
-    # Bitcoin (btc):
-    # 79924 usd        |-1.27%
-    # 1.0183 btc       |-1.28% (Jika input jumlah > 1)
-    
-    if amount == 1:
-        text = (
-            f"{coin_name} ({coin_display}):\n"
-            f"{format_number(price)} {fiat.lower()}        |{format_change(change_24h)}"
-        )
+    # Format output dengan monospace agar bisa autocopy
+    # Jika ada ekspresi matematika, tampilkan hasilnya dulu
+    if original_expr and not original_expr.replace(".", "").replace(",", "").isdigit():
+        calc_line = f"`{original_expr} = {format_number(amount)}` {coin_display}\n"
     else:
-        text = (
-            f"{coin_name} ({coin_display}):\n"
-            f"{format_number(total)} {fiat.lower()}        |{format_change(change_24h)}"
-        )
+        calc_line = ""
 
-    # Tombol chart tetap ada agar bersih
+    text = (
+        f"{coin_name} ({coin_display}):\n"
+        f"{calc_line}"
+        f"`{format_number(total)}` {fiat.lower()}        |`{format_change(change_24h)}`"
+    )
+
     chart_url = f"https://coinmarketcap.com/currencies/{coin_name.lower().replace(' ', '-')}/"
     keyboard = [[InlineKeyboardButton("View Chart", url=chart_url)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await msg.edit_text(text, reply_markup=reply_markup)
+    await msg.edit_text(text, reply_markup=reply_markup, parse_mode="MarkdownV2")
+
+async def handle_calculator(update: Update, text: str):
+    """Fungsi kalkulator sederhana"""
+    result = safe_eval(text)
+    if result is not None:
+        # Format result agar rapi
+        formatted_res = format_number(result)
+        await update.message.reply_text(f"`{text} = {formatted_res}`", parse_mode="MarkdownV2")
+        return True
+    return False
 
 # ==============================
 # COMMANDS
@@ -266,28 +251,24 @@ async def handle_price_query(update: Update, amount: float, coin_input: str, fia
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Halo! Selamat datang di Crypto Bot\n\n"
-        "Cara pakai - cukup ketik langsung:\n"
+        "Cara pakai:\n"
         "1 btc\n"
-        "2 eth idr\n"
-        "13*4 btc\n\n"
-        "/help - Bantuan\n"
-        "/fiat - Daftar mata uang"
+        "13*4 btc idr\n"
+        "10+5*2 (kalkulator)\n\n"
+        "/help - Bantuan"
     )
     await update.message.reply_text(text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "Panduan Penggunaan Bot\n\n"
-        "Format: <jumlah> <coin> [mata_uang]\n"
-        "Contoh: 1 btc idr\n\n"
-        "Aritmatika: 13*4 btc\n\n"
-        "/fiat - Daftar mata uang"
+        "Panduan Bot\n\n"
+        "Cek Harga: <jumlah/rumus> <coin> [fiat]\n"
+        "Contoh: 13*4 btc idr\n\n"
+        "Kalkulator: Ketik rumus matematika langsung\n"
+        "Contoh: 5000/150\n\n"
+        "Klik pada angka untuk copy otomatis."
     )
     await update.message.reply_text(text)
-
-async def fiat_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lines = ["Mata Uang Fiat yang Didukung:\n" + ", ".join(sorted(list(SUPPORTED_FIAT))).upper()]
-    await update.message.reply_text("\n".join(lines))
 
 # ==============================
 # MESSAGE HANDLER
@@ -300,15 +281,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.startswith("/"):
         return
     
-    result = parse_arithmetic_query(text)
-    if result is None:
-        result = parse_price_query(text)
-    
-    if result is None:
+    # 1. Coba parse sebagai query harga dengan aritmatika
+    res = parse_arithmetic_query(text)
+    if res:
+        amount, coin_input, fiat, expr = res
+        await handle_price_query(update, amount, coin_input, fiat, expr)
         return
-    
-    amount, coin_input, fiat = result
-    await handle_price_query(update, amount, coin_input, fiat)
+
+    # 2. Coba parse sebagai query harga normal
+    res = parse_price_query(text)
+    if res:
+        amount, coin_input, fiat, expr = res
+        await handle_price_query(update, amount, coin_input, fiat, expr)
+        return
+
+    # 3. Coba sebagai kalkulator murni
+    if await handle_calculator(update, text):
+        return
 
 # ==============================
 # MAIN
@@ -318,7 +307,6 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("fiat", fiat_list))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot berjalan...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
