@@ -52,9 +52,6 @@ SUPPORTED_FIAT = {
 # ==============================
 
 def cmc_get_price(symbol: str, convert: str) -> dict | None:
-    """
-    Ambil harga dari CMC. 'convert' bisa fiat atau symbol crypto lain.
-    """
     try:
         resp = cmc_get("/cryptocurrency/quotes/latest", {
             "symbol": symbol.upper(),
@@ -175,7 +172,6 @@ def parse_query(text: str):
     if len(parts) < 2:
         return None
     
-    # Kasus 3 kata: <expr> <part1> <part2>
     if len(parts) >= 3:
         target1 = parts[-2]
         target2 = parts[-1]
@@ -184,13 +180,10 @@ def parse_query(text: str):
         
         if amount is not None:
             if target1 in SUPPORTED_FIAT:
-                # REVERSE: 100k idr eth
                 return {"amount": amount, "base": target2, "convert": target1, "expr": expr_str, "is_reverse": True}
             else:
-                # NORMAL: 1 sol eth ATAU 1 btc idr
                 return {"amount": amount, "base": target1, "convert": target2, "expr": expr_str, "is_reverse": False}
 
-    # Kasus 2 kata: <expr> <coin>
     if len(parts) == 2:
         expr_str = parts[0]
         coin_candidate = parts[1]
@@ -213,7 +206,6 @@ async def handle_price_query(update: Update, q: dict):
 
     msg = await update.message.reply_text(f"Mencari {base_input.upper()}...")
 
-    # Ambil data harga
     data = get_price(base_input, convert_input)
 
     if not data:
@@ -226,17 +218,14 @@ async def handle_price_query(update: Update, q: dict):
     coin_name = data.get("name", coin_display)
 
     if is_reverse:
-        # Pembalikan: Berapa coin yang didapat dari fiat
         total_val = amount / price
         unit_display = coin_display
         calc_unit = convert_input.upper()
     else:
-        # Normal: Berapa convert yang didapat dari base
         total_val = amount * price
         unit_display = convert_input.lower()
         calc_unit = coin_display
 
-    # Baris kalkulasi
     expr_html = html.escape(original_expr)
     amount_html = html.escape(format_number(amount, is_calc=True))
     calc_line = f"<code>{expr_html} = {amount_html}</code> {html.escape(calc_unit)}\n"
@@ -269,6 +258,60 @@ async def handle_calculator(update: Update, text: str):
     return False
 
 # ==============================
+# SELL HANDLER
+# ==============================
+
+async def sell_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if len(args) < 4:
+        await update.message.reply_text("Format: <code>/sell 1 btc at 60000 usd</code>", parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        amount = safe_eval(args[0])
+        symbol = args[1].lower()
+        entry_price = safe_eval(args[3])
+        fiat = args[4].lower() if len(args) > 4 else "usd"
+        
+        if amount is None or entry_price is None:
+            raise ValueError
+    except:
+        await update.message.reply_text("Format salah. Pastikan angka benar.")
+        return
+
+    msg = await update.message.reply_text(f"Mencari {symbol.upper()}...")
+    
+    data = get_price(symbol, fiat)
+    if not data:
+        await msg.edit_text(f"{symbol.upper()} tidak ditemukan.")
+        return
+
+    current_price = data["price"]
+    initial_value = amount * entry_price
+    current_value = amount * current_price
+    pnl = current_value - initial_value
+    pnl_percent = (pnl / initial_value) * 100 if initial_value != 0 else 0
+    
+    text = (
+        f"Simulasi Jual\n\n"
+        f"Aset: {data['name']} ({data['symbol'].upper()})\n"
+        f"Jumlah: {format_number(amount, True)}\n"
+        f"-------------------\n"
+        f"Harga Beli: {format_number(entry_price, True)} {fiat.upper()}\n"
+        f"Harga Kini: {format_number(current_price, True)} {fiat.upper()}\n"
+        f"-------------------\n"
+        f"Modal: {format_number(initial_value, True)} {fiat.upper()}\n"
+        f"Hasil: {format_number(current_value, True)} {fiat.upper()}\n\n"
+        f"P/L: {format_number(pnl, True)} {fiat.upper()} ({format_change(pnl_percent)})"
+    )
+    
+    chart_url = f"https://coinmarketcap.com/currencies/{data['name'].lower().replace(' ', '-')}/"
+    keyboard = [[InlineKeyboardButton("View Chart", url=chart_url)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await msg.edit_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+
+# ==============================
 # MESSAGE HANDLER
 # ==============================
 
@@ -293,8 +336,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Bot Aktif.")))
+    app.add_handler(CommandHandler("sell", sell_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
     logger.info("Bot berjalan...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
