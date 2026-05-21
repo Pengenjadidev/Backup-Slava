@@ -9,8 +9,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 # KONFIGURASI
 # ==============================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")
+
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable tidak ditemukan!")
+if not COINGECKO_API_KEY:
+    raise ValueError("COINGECKO_API_KEY environment variable tidak ditemukan!")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -18,247 +22,129 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-COINGECKO_BASE = "https://api.coingecko.com/api/v3"
+# ==============================
+# COINGECKO API CONFIG
+# ==============================
+COINGECKO_BASE = "https://pro-api.coingecko.com/api/v3"
+
+def cg_headers() -> dict:
+    """Header dengan API key CoinGecko Pro."""
+    return {"x-cg-pro-api-key": COINGECKO_API_KEY}
 
 # ==============================
-# DAFTAR COIN LENGKAP
+# SUPPORTED FIAT
 # ==============================
-COIN_ALIASES = {
-    # Top 10
-    "btc": "bitcoin",
-    "eth": "ethereum",
-    "bnb": "binancecoin",
-    "sol": "solana",
-    "xrp": "ripple",
-    "usdt": "tether",
-    "usdc": "usd-coin",
-    "ada": "cardano",
-    "doge": "dogecoin",
-    "trx": "tron",
-    # Layer 1
-    "dot": "polkadot",
-    "avax": "avalanche-2",
-    "atom": "cosmos",
-    "near": "near",
-    "ftm": "fantom",
-    "algo": "algorand",
-    "icp": "internet-computer",
-    "apt": "aptos",
-    "sui": "sui",
-    "sei": "sei-network",
-    "inj": "injective-protocol",
-    "one": "harmony",
-    "egld": "elrond-erd-2",
-    "hbar": "hedera-hashgraph",
-    "xlm": "stellar",
-    "vet": "vechain",
-    "flow": "flow",
-    "kas": "kaspa",
-    "zec": "zcash",
-    "xtz": "tezos",
-    "eos": "eos",
-    "etc": "ethereum-classic",
-    "bch": "bitcoin-cash",
-    "bsv": "bitcoin-sv",
-    # Layer 2 / Scaling
-    "matic": "matic-network",
-    "pol": "matic-network",
-    "arb": "arbitrum",
-    "op": "optimism",
-    "strk": "starknet",
-    "zk": "zksync",
-    "imx": "immutable-x",
-    "lrc": "loopring",
-    # DeFi
-    "uni": "uniswap",
-    "aave": "aave",
-    "crv": "curve-dao-token",
-    "mkr": "maker",
-    "snx": "synthetix-network-token",
-    "comp": "compound-governance-token",
-    "bal": "balancer",
-    "sushi": "sushi",
-    "1inch": "1inch",
-    "cake": "pancakeswap-token",
-    "joe": "joe",
-    "gmx": "gmx",
-    "dydx": "dydx",
-    "perp": "perpetual-protocol",
-    # AI & Data
-    "fet": "fetch-ai",
-    "agix": "singularitynet",
-    "ocean": "ocean-protocol",
-    "rndr": "render-token",
-    "render": "render-token",
-    "grt": "the-graph",
-    "wld": "worldcoin-wld",
-    "tao": "bittensor",
-    "akash": "akash-network",
-    "akt": "akash-network",
-    # Gaming & Metaverse
-    "axs": "axie-infinity",
-    "sand": "the-sandbox",
-    "mana": "decentraland",
-    "enj": "enjincoin",
-    "ilv": "illuvium",
-    "gala": "gala",
-    "ygg": "yield-guild-games",
-    "magic": "magic",
-    "gods": "gods-unchained",
-    # NFT & Social
-    "blur": "blur",
-    "looks": "looksrare",
-    "x2y2": "x2y2",
-    # Infrastructure
-    "link": "chainlink",
-    "band": "band-protocol",
-    "api3": "api3",
-    "pyth": "pyth-network",
-    "fil": "filecoin",
-    "ar": "arweave",
-    "storj": "storj",
-    "lpt": "livepeer",
-    "hnt": "helium",
-    "iotx": "iotex",
-    # Exchange Tokens
-    "kcs": "kucoin-shares",
-    "gt": "gatechain-token",
-    "mx": "mx-token",
-    "okb": "okb",
-    "cro": "crypto-com-chain",
-    "ht": "huobi-token",
-    # Meme
-    "shib": "shiba-inu",
-    "pepe": "pepe",
-    "floki": "floki",
-    "bonk": "bonk",
-    "wif": "dogwifcoin",
-    "meme": "memecoin-2",
-    "bome": "book-of-meme",
-    "popcat": "popcat",
-    # Stablecoins & Wrapped
-    "dai": "dai",
-    "busd": "binance-usd",
-    "tusd": "true-usd",
-    "frax": "frax",
-    "wbtc": "wrapped-bitcoin",
-    "weth": "weth",
-    "steth": "staked-ether",
-    # Others
-    "ton": "the-open-network",
-    "ltc": "litecoin",
-    "xmr": "monero",
-    "dash": "dash",
-    "neo": "neo",
-    "waves": "waves",
-    "qtum": "qtum",
-    "bat": "basic-attention-token",
-    "chz": "chiliz",
-    "hot": "holotoken",
-    "zil": "zilliqa",
-    "iota": "iota",
-    "nano": "nano",
-    "sc": "siacoin",
-    "dcr": "decred",
-    "kava": "kava",
-    "celr": "celer-network",
-    "glm": "golem",
-    "ens": "ethereum-name-service",
-    "cvx": "convex-finance",
-    "frxeth": "frax-ether",
-    "stg": "stargate-finance",
-    "pendle": "pendle",
-    "ethfi": "ether-fi",
-    "eigen": "eigenlayer",
-    "jup": "jupiter-exchange-solana",
-    "pyusd": "paypal-usd",
-    "not": "notcoin",
-    "dogs": "dogs-2",
-    "hmstr": "hamster-kombat",
-    "cati": "catizen",
-    "major": "major",
+SUPPORTED_FIAT = {
+    "usd", "idr", "eur", "gbp", "jpy", "sgd", "myr",
+    "aud", "cny", "krw", "thb", "php", "vnd", "brl", "inr",
+    "chf", "hkd", "twd", "nzd", "sek", "nok", "dkk", "rub",
+    "zar", "try", "aed", "sar", "mxn", "cop", "clp", "pkr",
 }
-
-SUPPORTED_FIAT = {"usd", "idr", "eur", "gbp", "jpy", "sgd", "myr", "aud", "cny", "krw", "thb", "php", "vnd", "brl", "inr"}
 
 FIAT_SYMBOL = {
     "usd": "$", "idr": "Rp", "eur": "€", "gbp": "£", "jpy": "¥",
     "sgd": "S$", "myr": "RM", "aud": "A$", "cny": "¥", "krw": "₩",
     "thb": "฿", "php": "₱", "vnd": "₫", "brl": "R$", "inr": "₹",
+    "chf": "Fr", "hkd": "HK$", "twd": "NT$", "nzd": "NZ$",
+    "aed": "د.إ", "sar": "﷼", "try": "₺", "rub": "₽", "zar": "R",
 }
 
-# Cache daftar coin dari CoinGecko (refresh tiap sesi)
-_coin_list_cache = {}
+# ==============================
+# COIN SEARCH — langsung hit CoinGecko setiap query
+# ==============================
 
-def load_coin_list():
-    """Load semua coin dari CoinGecko ke cache untuk pencarian dinamis."""
-    global _coin_list_cache
-    if _coin_list_cache:
-        return
+def search_coin_id(query: str) -> str | None:
+    """
+    Cari coin ID dari CoinGecko berdasarkan simbol atau nama.
+    Hit API setiap kali dipanggil agar selalu up-to-date.
+    """
+    query = query.lower().strip()
     try:
-        resp = requests.get(f"{COINGECKO_BASE}/coins/list", timeout=15)
+        # Gunakan endpoint /search untuk pencarian fleksibel
+        resp = requests.get(
+            f"{COINGECKO_BASE}/search",
+            params={"query": query},
+            headers=cg_headers(),
+            timeout=10
+        )
         resp.raise_for_status()
-        coins = resp.json()
-        for coin in coins:
-            symbol = coin["symbol"].lower()
-            cid = coin["id"]
-            name = coin["name"].lower()
-            # Simpan: simbol → id (prioritaskan yang sudah ada di COIN_ALIASES)
-            if symbol not in _coin_list_cache:
-                _coin_list_cache[symbol] = cid
-            # Juga simpan nama lengkap
-            _coin_list_cache[name] = cid
-        logger.info(f"Loaded {len(coins)} coins from CoinGecko")
-    except Exception as e:
-        logger.error(f"Failed to load coin list: {e}")
+        data = resp.json()
 
-def resolve_coin_id(coin: str) -> str:
-    """Resolve simbol/nama ke CoinGecko coin ID."""
-    coin = coin.lower().strip()
-    # Prioritas 1: alias manual (lebih akurat)
-    if coin in COIN_ALIASES:
-        return COIN_ALIASES[coin]
-    # Prioritas 2: cache dari CoinGecko
-    if coin in _coin_list_cache:
-        return _coin_list_cache[coin]
-    # Fallback: gunakan apa adanya
-    return coin
+        coins = data.get("coins", [])
+        if not coins:
+            return None
+
+        # Prioritas 1: cocok persis dengan simbol
+        for coin in coins:
+            if coin["symbol"].lower() == query:
+                return coin["id"]
+
+        # Prioritas 2: cocok persis dengan nama
+        for coin in coins:
+            if coin["name"].lower() == query:
+                return coin["id"]
+
+        # Prioritas 3: hasil pertama dari pencarian
+        return coins[0]["id"]
+
+    except Exception as e:
+        logger.error(f"Error searching coin '{query}': {e}")
+        return None
+
 
 def get_coin_price(coin_id: str, vs_currency: str = "usd") -> dict | None:
+    """
+    Ambil harga coin dari CoinGecko Pro API.
+    Selalu hit API langsung setiap query.
+    """
     try:
-        url = f"{COINGECKO_BASE}/simple/price"
-        params = {
-            "ids": coin_id,
-            "vs_currencies": vs_currency,
-            "include_24hr_change": "true",
-            "include_market_cap": "true",
-        }
-        resp = requests.get(url, params=params, timeout=10)
+        resp = requests.get(
+            f"{COINGECKO_BASE}/simple/price",
+            params={
+                "ids": coin_id,
+                "vs_currencies": vs_currency,
+                "include_24hr_change": "true",
+                "include_market_cap": "true",
+                "include_24hr_vol": "true",
+            },
+            headers=cg_headers(),
+            timeout=10
+        )
         resp.raise_for_status()
         data = resp.json()
         if coin_id in data:
             return data[coin_id]
         return None
     except Exception as e:
-        logger.error(f"Error fetching price: {e}")
+        logger.error(f"Error fetching price for '{coin_id}': {e}")
         return None
 
-def get_fiat_rate(from_fiat: str, to_fiat: str) -> float | None:
+
+def get_coin_detail(coin_id: str) -> dict | None:
+    """Ambil detail coin (nama lengkap, simbol, dll)."""
     try:
-        url = f"https://open.er-api.com/v6/latest/{from_fiat.upper()}"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(
+            f"{COINGECKO_BASE}/coins/{coin_id}",
+            params={"localization": "false", "tickers": "false", "community_data": "false", "developer_data": "false"},
+            headers=cg_headers(),
+            timeout=10
+        )
         resp.raise_for_status()
-        data = resp.json()
-        if data.get("result") == "success" and to_fiat.upper() in data["rates"]:
-            return data["rates"][to_fiat.upper()]
-        return None
+        return resp.json()
     except Exception as e:
-        logger.error(f"Error fetching fiat rate: {e}")
+        logger.error(f"Error fetching detail for '{coin_id}': {e}")
         return None
+
+
+# ==============================
+# HELPERS
+# ==============================
 
 def format_number(n: float, currency: str = "") -> str:
-    symbol = FIAT_SYMBOL.get(currency.lower(), "")
-    if n >= 1_000_000_000:
+    symbol = FIAT_SYMBOL.get(currency.lower(), currency.upper() + " " if currency else "")
+    if n == 0:
+        return f"{symbol}0"
+    elif n >= 1_000_000_000:
         return f"{symbol}{n:,.2f}"
     elif n >= 1_000:
         return f"{symbol}{n:,.2f}"
@@ -269,25 +155,15 @@ def format_number(n: float, currency: str = "") -> str:
     else:
         return f"{symbol}{n:.10f}"
 
-def get_coin_name_display(coin_input: str, coin_id: str) -> str:
-    """Tampilkan nama coin yang lebih user-friendly."""
-    if coin_input.upper() != coin_id.upper():
-        return coin_input.upper()
-    return coin_id.replace("-", " ").title()
 
-# ==============================
-# PARSER: Natural Message
-# Format: <jumlah> <coin> [fiat]
-# Contoh: "1 btc", "2 eth idr", "0.5 sol eur"
-# ==============================
 def parse_price_query(text: str):
     """
-    Parse pesan natural menjadi (amount, coin, fiat).
-    Mengembalikan None jika tidak cocok.
+    Parse pesan natural: <jumlah> <coin> [fiat]
+    Contoh: '1 btc', '2 eth idr', '0.5 sol eur'
+    Return: (amount, coin_input, fiat) atau None
     """
     text = text.strip().lower()
-    # Regex: angka (opsional) + spasi + coin + spasi opsional + fiat opsional
-    pattern = r'^(\d+(?:[.,]\d+)?)\s+([a-z0-9]+)(?:\s+([a-z]+))?$'
+    pattern = r'^(\d+(?:[.,]\d+)?)\s+([a-z0-9\-]+)(?:\s+([a-z]+))?$'
     match = re.match(pattern, text)
     if not match:
         return None
@@ -296,65 +172,75 @@ def parse_price_query(text: str):
     amount = float(amount_str.replace(",", "."))
     fiat = fiat_input if fiat_input else "usd"
 
-    # Validasi: fiat harus dikenal
     if fiat not in SUPPORTED_FIAT:
         return None
-
-    # Validasi: coin tidak boleh berupa fiat
     if coin_input in SUPPORTED_FIAT:
         return None
 
     return amount, coin_input, fiat
 
+
+# ==============================
+# CORE: Handle price query
+# ==============================
+
 async def handle_price_query(update: Update, amount: float, coin_input: str, fiat: str):
-    """Proses query harga dan kirim hasilnya."""
-    coin_id = resolve_coin_id(coin_input)
-    data = get_coin_price(coin_id, fiat)
+    """Cari coin, ambil harga, dan tampilkan hasilnya."""
+    msg = await update.message.reply_text(f"🔍 Mencari *{coin_input.upper()}*...", parse_mode="Markdown")
 
-    if not data:
-        # Coba load coin list dan retry sekali
-        load_coin_list()
-        coin_id = resolve_coin_id(coin_input)
-        data = get_coin_price(coin_id, fiat)
-
-    if not data or fiat not in data:
-        await update.message.reply_text(
-            f"❌ Coin `{coin_input.upper()}` tidak ditemukan.\n"
-            f"Coba ketik nama lengkap coinnya, contoh: `1 bitcoin idr`\n"
-            f"Atau cek daftar coin dengan `/list`",
+    # Step 1: Cari coin ID dari CoinGecko
+    coin_id = search_coin_id(coin_input)
+    if not coin_id:
+        await msg.edit_text(
+            f"❌ Coin `{coin_input.upper()}` tidak ditemukan di CoinGecko.\n"
+            f"Coba gunakan nama lengkap, contoh: `1 bitcoin idr`",
             parse_mode="Markdown"
         )
         return
 
+    # Step 2: Ambil harga
+    await msg.edit_text(f"⏳ Mengambil harga *{coin_input.upper()}*...", parse_mode="Markdown")
+    data = get_coin_price(coin_id, fiat)
+
+    if not data or fiat not in data:
+        await msg.edit_text(
+            f"❌ Harga `{coin_input.upper()}` dalam `{fiat.upper()}` tidak tersedia.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Step 3: Susun response
     price_per_unit = data[fiat]
     total = amount * price_per_unit
-    change_24h = data.get(f"{fiat}_24h_change", 0) or 0
-    market_cap = data.get(f"{fiat}_market_cap", 0) or 0
+    change_24h = data.get(f"{fiat}_24h_change") or 0
+    market_cap = data.get(f"{fiat}_market_cap") or 0
+    vol_24h = data.get(f"{fiat}_24h_vol") or 0
 
     change_emoji = "🟢" if change_24h >= 0 else "🔴"
     change_sign = "+" if change_24h >= 0 else ""
     coin_display = coin_input.upper()
 
     if amount == 1:
-        # Tampilan harga 1 coin
         text = (
             f"💰 *{coin_display} / {fiat.upper()}*\n\n"
             f"💵 Harga: `{format_number(price_per_unit, fiat)}`\n"
             f"{change_emoji} 24h: `{change_sign}{change_24h:.2f}%`\n"
-            f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n\n"
+            f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n"
+            f"📈 Volume 24h: `{format_number(vol_24h, fiat)}`\n\n"
             f"_Data dari CoinGecko_"
         )
     else:
-        # Tampilan konversi jumlah tertentu
         text = (
             f"💰 *{amount:g} {coin_display} → {fiat.upper()}*\n\n"
             f"💵 Total: `{format_number(total, fiat)}`\n"
-            f"📌 Harga per unit: `{format_number(price_per_unit, fiat)}`\n"
-            f"{change_emoji} 24h: `{change_sign}{change_24h:.2f}%`\n\n"
+            f"📌 Harga/unit: `{format_number(price_per_unit, fiat)}`\n"
+            f"{change_emoji} 24h: `{change_sign}{change_24h:.2f}%`\n"
+            f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n\n"
             f"_Data dari CoinGecko_"
         )
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await msg.edit_text(text, parse_mode="Markdown")
+
 
 # ==============================
 # COMMAND HANDLERS
@@ -367,85 +253,61 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `1 btc` → harga 1 BTC dalam USD\n"
         "• `2 eth` → harga 2 ETH dalam USD\n"
         "• `1 btc idr` → harga 1 BTC dalam Rupiah\n"
-        "• `0.5 sol eur` → harga 0.5 SOL dalam Euro\n\n"
-        "📋 `/list` — Daftar coin & simbol\n"
+        "• `0.5 sol eur` → harga 0.5 SOL dalam Euro\n"
+        "• `100 doge jpy` → harga 100 DOGE dalam Yen\n\n"
+        "Semua koin yang ada di CoinGecko bisa dicari! 🚀\n\n"
         "❓ `/help` — Bantuan lengkap\n"
+        "💱 `/fiat` — Daftar mata uang yang didukung\n"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fiat_list = ", ".join(sorted(f.upper() for f in SUPPORTED_FIAT))
     text = (
         "📖 *Panduan Penggunaan Bot*\n\n"
-        "*Format penulisan:*\n"
+        "*Format:*\n"
         "`<jumlah> <coin> [mata_uang]`\n\n"
         "*Contoh:*\n"
-        "`1 btc` — harga 1 BTC dalam USD\n"
-        "`2 eth` — harga 2 ETH dalam USD\n"
-        "`1 btc idr` — harga 1 BTC dalam IDR\n"
-        "`0.5 sol eur` — harga 0.5 SOL dalam EUR\n"
-        "`10 bnb sgd` — harga 10 BNB dalam SGD\n"
-        "`100 doge jpy` — harga 100 DOGE dalam JPY\n\n"
-        f"*Mata uang fiat:*\n{fiat_list}\n\n"
-        "*Default:* jika fiat tidak ditulis, otomatis USD\n\n"
-        "📋 Ketik `/list` untuk melihat daftar coin"
+        "`1 btc` — 1 BTC dalam USD\n"
+        "`2 eth` — 2 ETH dalam USD\n"
+        "`1 btc idr` — 1 BTC dalam Rupiah\n"
+        "`0.5 sol eur` — 0.5 SOL dalam Euro\n"
+        "`100 doge jpy` — 100 DOGE dalam Yen\n"
+        "`1 pepe idr` — 1 PEPE dalam Rupiah\n"
+        "`1 notcoin idr` — bisa nama lengkap juga\n\n"
+        "*Default:* jika fiat tidak ditulis → USD\n\n"
+        "💡 Semua koin di CoinGecko bisa dicari!\n"
+        "💱 `/fiat` — Daftar mata uang yang didukung"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-async def list_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    categories = {
-        "🏆 Top Crypto": [
-            ("BTC","Bitcoin"),("ETH","Ethereum"),("BNB","BNB"),("SOL","Solana"),
-            ("XRP","Ripple"),("ADA","Cardano"),("DOGE","Dogecoin"),("TRX","Tron"),
-            ("AVAX","Avalanche"),("DOT","Polkadot"),
-        ],
-        "🔷 Layer 2": [
-            ("MATIC","Polygon"),("ARB","Arbitrum"),("OP","Optimism"),("IMX","Immutable X"),
-        ],
-        "🏦 DeFi": [
-            ("UNI","Uniswap"),("AAVE","Aave"),("MKR","Maker"),("CAKE","PancakeSwap"),
-            ("GMX","GMX"),("DYDX","dYdX"),
-        ],
-        "🤖 AI": [
-            ("FET","Fetch.ai"),("RNDR","Render"),("WLD","Worldcoin"),("TAO","Bittensor"),
-            ("GRT","The Graph"),("AGIX","SingularityNET"),
-        ],
-        "🎮 Gaming": [
-            ("AXS","Axie Infinity"),("SAND","The Sandbox"),("MANA","Decentraland"),
-            ("GALA","Gala"),("ENJ","Enjin"),
-        ],
-        "🐸 Meme": [
-            ("SHIB","Shiba Inu"),("PEPE","Pepe"),("FLOKI","Floki"),("BONK","Bonk"),
-            ("WIF","dogwifhat"),("BOME","Book of Meme"),
-        ],
-        "🔗 Infrastruktur": [
-            ("LINK","Chainlink"),("FIL","Filecoin"),("AR","Arweave"),("HNT","Helium"),
-            ("LTC","Litecoin"),("XMR","Monero"),("TON","Toncoin"),
-        ],
-    }
 
-    lines = ["📋 *Daftar Coin yang Didukung*\n"]
-    for cat, coins in categories.items():
-        lines.append(f"\n*{cat}*")
-        row = "  ".join(f"`{s}`" for s, _ in coins)
-        lines.append(row)
-
-    lines.append("\n💡 *Cara pakai:*")
-    lines.append("`1 btc` atau `2 eth idr` atau `0.5 sol eur`")
-    lines.append("\n_Coin lain juga bisa dicoba dengan nama/simbol CoinGecko-nya_")
-
+async def fiat_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    fiat_display = [
+        ("USD", "US Dollar"), ("IDR", "Rupiah"), ("EUR", "Euro"),
+        ("GBP", "Pound"), ("JPY", "Yen"), ("SGD", "Singapore Dollar"),
+        ("MYR", "Ringgit"), ("AUD", "Australian Dollar"), ("CNY", "Yuan"),
+        ("KRW", "Won"), ("THB", "Baht"), ("PHP", "Peso"), ("VND", "Dong"),
+        ("BRL", "Real"), ("INR", "Rupee"), ("CHF", "Swiss Franc"),
+        ("HKD", "HK Dollar"), ("TWD", "Taiwan Dollar"), ("AED", "Dirham"),
+        ("SAR", "Riyal"), ("TRY", "Lira"), ("RUB", "Ruble"), ("ZAR", "Rand"),
+    ]
+    lines = ["💱 *Mata Uang Fiat yang Didukung*\n"]
+    for code, name in fiat_display:
+        lines.append(f"`{code}` — {name}")
+    lines.append("\n💡 Contoh: `1 btc idr` atau `2 eth eur`")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+
 # ==============================
-# MESSAGE HANDLER (Natural Input)
+# MESSAGE HANDLER
 # ==============================
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
     text = update.message.text.strip()
-
-    # Abaikan pesan yang dimulai dengan /
     if text.startswith("/"):
         return
 
@@ -456,24 +318,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount, coin_input, fiat = result
     await handle_price_query(update, amount, coin_input, fiat)
 
+
 # ==============================
 # MAIN
 # ==============================
-def main():
-    # Load coin list saat startup
-    load_coin_list()
 
+def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("list", list_coins))
-
-    # Handler untuk pesan natural (1 btc, 2 eth idr, dst)
+    app.add_handler(CommandHandler("fiat", fiat_list))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot berjalan...")
+    logger.info("✅ Bot berjalan...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
