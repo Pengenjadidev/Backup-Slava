@@ -258,22 +258,23 @@ async def handle_calculator(update: Update, text: str):
     return False
 
 # ==============================
-# SELL HANDLER
+# SELL HANDLER (REGRET CALCULATOR)
 # ==============================
 
 async def sell_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 4:
-        await update.message.reply_text("Format: <code>/sell 1 btc at 60000 usd</code>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("Format: <code>/sell 1 btc at 30000 usd</code>", parse_mode=ParseMode.HTML)
         return
 
     try:
         amount = safe_eval(args[0])
         symbol = args[1].lower()
-        entry_price = safe_eval(args[3])
+        # args[2] is 'at'
+        sold_price = safe_eval(args[3])
         fiat = args[4].lower() if len(args) > 4 else "usd"
         
-        if amount is None or entry_price is None:
+        if amount is None or sold_price is None:
             raise ValueError
     except:
         await update.message.reply_text("Format salah. Pastikan angka benar.")
@@ -287,22 +288,26 @@ async def sell_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     current_price = data["price"]
-    initial_value = amount * entry_price
-    current_value = amount * current_price
-    pnl = current_value - initial_value
-    pnl_percent = (pnl / initial_value) * 100 if initial_value != 0 else 0
+    
+    # Logika: "Dapet berapa dulu" vs "Harusnya dapet berapa sekarang"
+    realized_value = amount * sold_price
+    current_potential_value = amount * current_price
+    
+    # Selisih: Jika harga sekarang > harga jual dulu, berarti rugi (penyesalan)
+    diff = realized_value - current_potential_value
+    diff_percent = (diff / current_potential_value) * 100 if current_potential_value != 0 else 0
     
     text = (
         f"Simulasi Jual\n\n"
         f"Aset: {data['name']} ({data['symbol'].upper()})\n"
         f"Jumlah: {format_number(amount, True)}\n"
         f"-------------------\n"
-        f"Harga Beli: {format_number(entry_price, True)} {fiat.upper()}\n"
+        f"Harga Jual Dulu: {format_number(sold_price, True)} {fiat.upper()}\n"
         f"Harga Kini: {format_number(current_price, True)} {fiat.upper()}\n"
         f"-------------------\n"
-        f"Modal: {format_number(initial_value, True)} {fiat.upper()}\n"
-        f"Hasil: {format_number(current_value, True)} {fiat.upper()}\n\n"
-        f"P/L: {format_number(pnl, True)} {fiat.upper()} ({format_change(pnl_percent)})"
+        f"Hasil Jual Dulu: {format_number(realized_value, True)} {fiat.upper()}\n"
+        f"Nilai Kini: {format_number(current_potential_value, True)} {fiat.upper()}\n\n"
+        f"Selisih: {format_number(diff, True)} {fiat.upper()} ({format_change(diff_percent)})"
     )
     
     chart_url = f"https://coinmarketcap.com/currencies/{data['name'].lower().replace(' ', '-')}/"
