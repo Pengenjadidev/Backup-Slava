@@ -2,7 +2,7 @@ import logging
 import os
 import re
 import requests
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # ==============================
@@ -45,14 +45,6 @@ SUPPORTED_FIAT = {
     "aed", "sar", "mxn", "pkr",
 }
 
-FIAT_SYMBOL = {
-    "usd": "$", "idr": "Rp ", "eur": "€", "gbp": "£", "jpy": "¥",
-    "sgd": "S$", "myr": "RM ", "aud": "A$", "cny": "¥", "krw": "₩",
-    "thb": "฿", "php": "₱", "vnd": "₫", "brl": "R$", "inr": "₹",
-    "chf": "Fr ", "hkd": "HK$", "twd": "NT$", "nzd": "NZ$",
-    "aed": "AED ", "sar": "SAR ", "try": "₺", "rub": "₽", "zar": "R",
-}
-
 # ==============================
 # COINMARKETCAP: SEARCH + PRICE
 # ==============================
@@ -60,7 +52,6 @@ FIAT_SYMBOL = {
 def cmc_get_price(symbol: str, fiat: str) -> dict | None:
     """
     Ambil harga langsung dari CMC by symbol.
-    CMC otomatis return coin dengan rank tertinggi jika ada duplikat simbol.
     """
     try:
         resp = cmc_get("/cryptocurrency/quotes/latest", {
@@ -78,8 +69,6 @@ def cmc_get_price(symbol: str, fiat: str) -> dict | None:
         if not coin_data:
             return None
 
-        # CMC bisa return list jika ada duplikat simbol
-        # Ambil coin dengan rank market cap tertinggi (rank terkecil)
         entries = coin_data.get(symbol.upper(), [])
         if isinstance(entries, list):
             entries = sorted(entries, key=lambda x: x.get("cmc_rank") or 999999)
@@ -95,13 +84,9 @@ def cmc_get_price(symbol: str, fiat: str) -> dict | None:
 
         return {
             "name": coin.get("name", symbol),
-            "symbol": coin.get("symbol", symbol).upper(),
+            "symbol": coin.get("symbol", symbol).lower(),
             "price": quote.get("price") or 0,
             "change_24h": quote.get("percent_change_24h") or 0,
-            "market_cap": quote.get("market_cap") or 0,
-            "volume_24h": quote.get("volume_24h") or 0,
-            "rank": coin.get("cmc_rank"),
-            "source": "CoinMarketCap",
         }
 
     except Exception as e:
@@ -123,15 +108,12 @@ def cmc_search_by_name(query: str, fiat: str) -> dict | None:
         coins = resp.json().get("data", [])
 
         q = query.lower()
-        # Cari exact match nama dulu
         match = next((c for c in coins if c["name"].lower() == q), None)
-        # Jika tidak ada, cari yang mengandung query
         if not match:
             match = next((c for c in coins if q in c["name"].lower()), None)
         if not match:
             return None
 
-        # Sekarang ambil harga menggunakan symbol yang ditemukan
         return cmc_get_price(match["symbol"], fiat)
 
     except Exception as e:
@@ -142,15 +124,11 @@ def cmc_search_by_name(query: str, fiat: str) -> dict | None:
 def get_price(query: str, fiat: str) -> dict | None:
     """
     Resolve harga coin dari CoinMarketCap.
-    1. Coba by symbol langsung
-    2. Fallback by nama
     """
-    # Step 1: coba sebagai symbol
     data = cmc_get_price(query, fiat)
     if data:
         return data
 
-    # Step 2: coba sebagai nama (misal: "bitcoin", "ethereum")
     logger.info(f"Symbol lookup miss for '{query}', trying name search...")
     data = cmc_search_by_name(query, fiat)
     if data:
@@ -162,20 +140,62 @@ def get_price(query: str, fiat: str) -> dict | None:
 # HELPERS
 # ==============================
 
-def format_number(n: float, currency: str = "") -> str:
-    symbol = FIAT_SYMBOL.get(currency.lower(), currency.upper() + " " if currency else "")
+def format_number(n: float) -> str:
+    """Format angka tanpa simbol mata uang di depan"""
     if n == 0:
-        return f"{symbol}0"
-    elif n >= 1_000_000_000:
-        return f"{symbol}{n:,.2f}"
-    elif n >= 1_000:
-        return f"{symbol}{n:,.2f}"
+        return "0"
+    elif n >= 1000:
+        return f"{n:,.0f}".replace(",", ".")
     elif n >= 1:
-        return f"{symbol}{n:,.4f}"
+        return f"{n:,.2f}".replace(",", ".")
     elif n >= 0.0001:
-        return f"{symbol}{n:.6f}"
+        return f"{n:.6f}"
     else:
-        return f"{symbol}{n:.10f}"
+        return f"{n:.10f}"
+
+def format_change(change: float) -> str:
+    """Format perubahan 24h tanpa emotikon"""
+    sign = "+" if change >= 0 else ""
+    return f"{sign}{change:.2f}%"
+
+def parse_arithmetic_query(text: str):
+    """
+    Parse query dengan operasi aritmatika.
+    """
+    text = text.strip().lower()
+    pattern = r'^(\d+(?:[.,]\d+)?)\s*([+\-*/])\s*(\d+(?:[.,]\d+)?)\s+([a-z0-9\-]+)(?:\s+([a-z]+))?$'
+    match = re.match(pattern, text)
+    if not match:
+        return None
+    
+    num1_str, operator, num2_str, coin_input, fiat_input = match.groups()
+    
+    try:
+        num1 = float(num1_str.replace(",", "."))
+        num2 = float(num2_str.replace(",", "."))
+        
+        if operator == "+":
+            amount = num1 + num2
+        elif operator == "-":
+            amount = num1 - num2
+        elif operator == "*":
+            amount = num1 * num2
+        elif operator == "/":
+            if num2 == 0:
+                return None
+            amount = num1 / num2
+        else:
+            return None
+        
+        fiat = fiat_input if fiat_input else "usd"
+        if fiat not in SUPPORTED_FIAT:
+            return None
+        if coin_input in SUPPORTED_FIAT:
+            return None
+        
+        return amount, coin_input, fiat
+    except:
+        return None
 
 def parse_price_query(text: str):
     """Parse: <jumlah> <coin> [fiat]"""
@@ -199,55 +219,45 @@ def parse_price_query(text: str):
 
 async def handle_price_query(update: Update, amount: float, coin_input: str, fiat: str):
     msg = await update.message.reply_text(
-        f"🔍 Mencari *{coin_input.upper()}*...", parse_mode="Markdown"
+        f"Mencari {coin_input.upper()}..."
     )
 
     data = get_price(coin_input, fiat)
 
     if not data:
         await msg.edit_text(
-            f"❌ *{coin_input.upper()}* tidak ditemukan.\n"
-            f"Coba gunakan nama lengkap, contoh: `1 bitcoin idr`",
-            parse_mode="Markdown"
+            f"{coin_input.upper()} tidak ditemukan."
         )
         return
 
     price = data["price"]
     total = amount * price
     change_24h = data.get("change_24h") or 0
-    market_cap = data.get("market_cap") or 0
-    volume_24h = data.get("volume_24h") or 0
-    rank = data.get("rank")
-    coin_display = data.get("symbol", coin_input.upper())
+    coin_display = data.get("symbol", coin_input.lower())
     coin_name = data.get("name", coin_display)
 
-    change_emoji = "🟢" if change_24h >= 0 else "🔴"
-    change_sign = "+" if change_24h >= 0 else ""
-    rank_text = f"#{rank}" if rank else "-"
-
+    # Format output sangat sederhana sesuai permintaan
+    # Bitcoin (btc):
+    # 79924 usd        |-1.27%
+    # 1.0183 btc       |-1.28% (Jika input jumlah > 1)
+    
     if amount == 1:
         text = (
-            f"💰 *{coin_name} ({coin_display}) / {fiat.upper()}*\n"
-            f"🏅 Rank: `{rank_text}`\n\n"
-            f"💵 Harga: `{format_number(price, fiat)}`\n"
-            f"{change_emoji} 24h: `{change_sign}{change_24h:.2f}%`\n"
-            f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n"
-            f"📈 Volume 24h: `{format_number(volume_24h, fiat)}`\n\n"
-            f"_Sumber: CoinMarketCap_"
+            f"{coin_name} ({coin_display}):\n"
+            f"{format_number(price)} {fiat.lower()}        |{format_change(change_24h)}"
         )
     else:
         text = (
-            f"💰 *{amount:g} {coin_name} ({coin_display}) → {fiat.upper()}*\n"
-            f"🏅 Rank: `{rank_text}`\n\n"
-            f"💵 Total: `{format_number(total, fiat)}`\n"
-            f"📌 Harga/unit: `{format_number(price, fiat)}`\n"
-            f"{change_emoji} 24h: `{change_sign}{change_24h:.2f}%`\n"
-            f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n"
-            f"📈 Volume 24h: `{format_number(volume_24h, fiat)}`\n\n"
-            f"_Sumber: CoinMarketCap_"
+            f"{coin_name} ({coin_display}):\n"
+            f"{format_number(total)} {fiat.lower()}        |{format_change(change_24h)}"
         )
 
-    await msg.edit_text(text, parse_mode="Markdown")
+    # Tombol chart tetap ada agar bersih
+    chart_url = f"https://coinmarketcap.com/currencies/{coin_name.lower().replace(' ', '-')}/"
+    keyboard = [[InlineKeyboardButton("View Chart", url=chart_url)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await msg.edit_text(text, reply_markup=reply_markup)
 
 # ==============================
 # COMMANDS
@@ -255,51 +265,29 @@ async def handle_price_query(update: Update, amount: float, coin_input: str, fia
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "👋 *Halo! Selamat datang di Crypto Bot!*\n\n"
-        "Cara pakai — cukup ketik langsung:\n\n"
-        "• `1 btc` → harga BTC dalam USD\n"
-        "• `2 eth idr` → harga 2 ETH dalam Rupiah\n"
-        "• `1 btc idr` → harga BTC dalam Rupiah\n"
-        "• `0.5 sol eur` → harga 0.5 SOL dalam Euro\n"
-        "• `100 doge jpy` → harga 100 DOGE dalam Yen\n\n"
-        "📡 Data dari *CoinMarketCap*\n\n"
-        "❓ `/help` — Bantuan\n"
-        "💱 `/fiat` — Daftar mata uang\n"
+        "Halo! Selamat datang di Crypto Bot\n\n"
+        "Cara pakai - cukup ketik langsung:\n"
+        "1 btc\n"
+        "2 eth idr\n"
+        "13*4 btc\n\n"
+        "/help - Bantuan\n"
+        "/fiat - Daftar mata uang"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "📖 *Panduan Penggunaan Bot*\n\n"
-        "*Format:* `<jumlah> <coin> [mata_uang]`\n\n"
-        "*Contoh:*\n"
-        "`1 btc` — harga BTC dalam USD\n"
-        "`2 eth idr` — 2 ETH dalam Rupiah\n"
-        "`0.5 sol eur` — 0.5 SOL dalam Euro\n"
-        "`100 doge jpy` — 100 DOGE dalam Yen\n"
-        "`1 pepe idr` — token meme\n"
-        "`1 bitcoin idr` — nama lengkap juga bisa\n\n"
-        "*Default fiat:* USD jika tidak ditulis\n\n"
-        "💱 `/fiat` — Daftar mata uang yang didukung"
+        "Panduan Penggunaan Bot\n\n"
+        "Format: <jumlah> <coin> [mata_uang]\n"
+        "Contoh: 1 btc idr\n\n"
+        "Aritmatika: 13*4 btc\n\n"
+        "/fiat - Daftar mata uang"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text)
 
 async def fiat_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fiat_display = [
-        ("USD","Dollar"),("IDR","Rupiah"),("EUR","Euro"),("GBP","Pound"),
-        ("JPY","Yen"),("SGD","S$ Dollar"),("MYR","Ringgit"),("AUD","A$ Dollar"),
-        ("CNY","Yuan"),("KRW","Won"),("THB","Baht"),("PHP","Peso"),
-        ("VND","Dong"),("BRL","Real"),("INR","Rupee"),("CHF","Swiss Franc"),
-        ("HKD","HK Dollar"),("TWD","Taiwan Dollar"),("AED","Dirham"),
-        ("SAR","Riyal"),("TRY","Lira"),("RUB","Ruble"),("ZAR","Rand"),
-        ("MXN","Peso Mexico"),("PKR","Rupee Pakistan"),
-    ]
-    lines = ["💱 *Mata Uang Fiat yang Didukung*\n"]
-    for code, name in fiat_display:
-        symbol = FIAT_SYMBOL.get(code.lower(), "")
-        lines.append(f"`{code}` {symbol}— {name}")
-    lines.append("\n💡 Contoh: `1 btc idr` atau `2 eth eur`")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines = ["Mata Uang Fiat yang Didukung:\n" + ", ".join(sorted(list(SUPPORTED_FIAT))).upper()]
+    await update.message.reply_text("\n".join(lines))
 
 # ==============================
 # MESSAGE HANDLER
@@ -311,9 +299,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text.startswith("/"):
         return
-    result = parse_price_query(text)
+    
+    result = parse_arithmetic_query(text)
+    if result is None:
+        result = parse_price_query(text)
+    
     if result is None:
         return
+    
     amount, coin_input, fiat = result
     await handle_price_query(update, amount, coin_input, fiat)
 
@@ -327,7 +320,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("fiat", fiat_list))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("✅ Bot berjalan (CoinMarketCap)...")
+    logger.info("Bot berjalan...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
