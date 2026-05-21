@@ -150,14 +150,33 @@ def format_change(change: float) -> str:
     sign = "+" if change >= 0 else ""
     return f"{sign}{change:.2f}%"
 
-def process_k_format(text: str) -> str:
-    def replace_k(match):
-        num = match.group(1)
-        return str(int(float(num) * 1000))
-    return re.sub(r'(\d+(?:\.\d+)?)k', replace_k, text, flags=re.IGNORECASE)
+def process_suffix_format(text: str) -> str:
+    """
+    Konversi suffix k, m, b, t ke angka aslinya.
+    k = 1,000
+    m = 1,000,000
+    b = 1,000,000,000
+    t = 1,000,000,000,000
+    """
+    def replace_suffix(match):
+        num = float(match.group(1))
+        suffix = match.group(2).lower()
+        multipliers = {
+            'k': 1000,
+            'm': 1000000,
+            'b': 1000000000,
+            't': 1000000000000
+        }
+        result = num * multipliers[suffix]
+        # Kembalikan sebagai string integer jika tidak ada desimal untuk menghindari notasi ilmiah
+        if result == int(result):
+            return str(int(result))
+        return f"{result:.10f}".rstrip('0').rstrip('.')
+
+    return re.sub(r'(\d+(?:\.\d+)?)([kmbt])', replace_suffix, text, flags=re.IGNORECASE)
 
 def safe_eval(expr: str):
-    expr = process_k_format(expr.replace(",", "."))
+    expr = process_suffix_format(expr.replace(",", "."))
     if not re.match(r'^[0-9.+\-*/\s()]+$', expr):
         return None
     try:
@@ -167,7 +186,7 @@ def safe_eval(expr: str):
         return None
 
 def parse_query(text: str):
-    text = process_k_format(text.strip().lower())
+    text = process_suffix_format(text.strip().lower())
     parts = text.split()
     if len(parts) < 2:
         return None
@@ -226,9 +245,15 @@ async def handle_price_query(update: Update, q: dict):
         unit_display = convert_input.lower()
         calc_unit = coin_display
 
-    expr_html = html.escape(original_expr)
-    amount_html = html.escape(format_number(amount, is_calc=True))
-    calc_line = f"<code>{expr_html} = {amount_html}</code> {html.escape(calc_unit)}\n"
+    # Sembunyikan baris kalkulasi jika input hanya angka sederhana
+    # Tampilkan jika mengandung operasi matematika atau suffix (k, m, b, t)
+    show_calc_line = any(char in original_expr for char in "+-*/") or any(s in original_expr.lower() for s in "kmbt")
+    
+    calc_line = ""
+    if show_calc_line:
+        expr_html = html.escape(original_expr)
+        amount_html = html.escape(format_number(amount, is_calc=True))
+        calc_line = f"<code>{expr_html} = {amount_html}</code> {html.escape(calc_unit)}\n"
 
     coin_name_html = html.escape(coin_name)
     coin_display_html = html.escape(coin_display)
@@ -270,7 +295,6 @@ async def sell_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amount = safe_eval(args[0])
         symbol = args[1].lower()
-        # args[2] is 'at'
         sold_price = safe_eval(args[3])
         fiat = args[4].lower() if len(args) > 4 else "usd"
         
@@ -288,12 +312,8 @@ async def sell_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     current_price = data["price"]
-    
-    # Logika: "Dapet berapa dulu" vs "Harusnya dapet berapa sekarang"
     realized_value = amount * sold_price
     current_potential_value = amount * current_price
-    
-    # Selisih: Jika harga sekarang > harga jual dulu, berarti rugi (penyesalan)
     diff = realized_value - current_potential_value
     diff_percent = (diff / current_potential_value) * 100 if current_potential_value != 0 else 0
     
