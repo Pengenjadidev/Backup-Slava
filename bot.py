@@ -51,11 +51,14 @@ SUPPORTED_FIAT = {
 # COINMARKETCAP: SEARCH + PRICE
 # ==============================
 
-def cmc_get_price(symbol: str, fiat: str) -> dict | None:
+def cmc_get_price(symbol: str, convert: str) -> dict | None:
+    """
+    Ambil harga dari CMC. 'convert' bisa fiat atau symbol crypto lain.
+    """
     try:
         resp = cmc_get("/cryptocurrency/quotes/latest", {
             "symbol": symbol.upper(),
-            "convert": fiat.upper(),
+            "convert": convert.upper(),
         })
         resp.raise_for_status()
         data = resp.json()
@@ -77,7 +80,7 @@ def cmc_get_price(symbol: str, fiat: str) -> dict | None:
         else:
             return None
 
-        quote = coin.get("quote", {}).get(fiat.upper(), {})
+        quote = coin.get("quote", {}).get(convert.upper(), {})
         if not quote:
             return None
 
@@ -89,11 +92,11 @@ def cmc_get_price(symbol: str, fiat: str) -> dict | None:
         }
 
     except Exception as e:
-        logger.error(f"CMC price error for '{symbol}': {e}")
+        logger.error(f"CMC price error for '{symbol}' to '{convert}': {e}")
         return None
 
 
-def cmc_search_by_name(query: str, fiat: str) -> dict | None:
+def cmc_search_by_name(query: str, convert: str) -> dict | None:
     try:
         resp = cmc_get("/cryptocurrency/map", {
             "listing_status": "active",
@@ -110,18 +113,18 @@ def cmc_search_by_name(query: str, fiat: str) -> dict | None:
         if not match:
             return None
 
-        return cmc_get_price(match["symbol"], fiat)
+        return cmc_get_price(match["symbol"], convert)
 
     except Exception as e:
         logger.error(f"CMC name search error for '{query}': {e}")
         return None
 
 
-def get_price(query: str, fiat: str) -> dict | None:
-    data = cmc_get_price(query, fiat)
+def get_price(query: str, convert: str) -> dict | None:
+    data = cmc_get_price(query, convert)
     if data:
         return data
-    data = cmc_search_by_name(query, fiat)
+    data = cmc_search_by_name(query, convert)
     return data
 
 # ==============================
@@ -132,7 +135,6 @@ def format_number(n: float, is_calc: bool = False) -> str:
     if n == 0:
         return "0"
     
-    # Jika hasil perhitungan, hilangkan desimal jika bulat
     if is_calc:
         if n == int(n):
             return f"{int(n):,}".replace(",", ".")
@@ -141,7 +143,7 @@ def format_number(n: float, is_calc: bool = False) -> str:
     if n >= 1000:
         return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     elif n >= 1:
-        return f"{n:,.2f}".replace(".", ",")
+        return f"{n:,.4f}".replace(".", ",")
     elif n >= 0.0001:
         return f"{n:.6f}".replace(".", ",")
     else:
@@ -152,14 +154,12 @@ def format_change(change: float) -> str:
     return f"{sign}{change:.2f}%"
 
 def process_k_format(text: str) -> str:
-    """Mengganti 100k menjadi 100000"""
     def replace_k(match):
         num = match.group(1)
         return str(int(float(num) * 1000))
     return re.sub(r'(\d+(?:\.\d+)?)k', replace_k, text, flags=re.IGNORECASE)
 
 def safe_eval(expr: str):
-    """Evaluasi aritmatika sederhana dengan aman"""
     expr = process_k_format(expr.replace(",", "."))
     if not re.match(r'^[0-9.+\-*/\s()]+$', expr):
         return None
@@ -170,40 +170,25 @@ def safe_eval(expr: str):
         return None
 
 def parse_query(text: str):
-    """
-    Parse query:
-    1. <expr> <coin> [fiat] -> Normal
-    2. <expr> <fiat> <coin> -> Reverse (Pembalikan)
-    """
     text = process_k_format(text.strip().lower())
-    
-    # Pattern 1: <expr> <coin/fiat> <coin/fiat>
-    # Kita pecah berdasarkan spasi terakhir
     parts = text.split()
     if len(parts) < 2:
         return None
     
-    # Coba identifikasi fiat dan coin
     # Kasus 3 kata: <expr> <part1> <part2>
     if len(parts) >= 3:
-        fiat_candidate = parts[-2]
-        coin_candidate = parts[-1]
+        target1 = parts[-2]
+        target2 = parts[-1]
         expr_str = " ".join(parts[:-2])
+        amount = safe_eval(expr_str)
         
-        if fiat_candidate in SUPPORTED_FIAT:
-            # Ini adalah REVERSE: 100k idr eth
-            amount = safe_eval(expr_str)
-            if amount is not None:
-                return {"amount": amount, "coin": coin_candidate, "fiat": fiat_candidate, "expr": expr_str, "is_reverse": True}
-        
-        # Coba pola normal: 1 btc idr
-        fiat_candidate = parts[-1]
-        coin_candidate = parts[-2]
-        expr_str = " ".join(parts[:-2])
-        if fiat_candidate in SUPPORTED_FIAT:
-            amount = safe_eval(expr_str)
-            if amount is not None:
-                return {"amount": amount, "coin": coin_candidate, "fiat": fiat_candidate, "expr": expr_str, "is_reverse": False}
+        if amount is not None:
+            if target1 in SUPPORTED_FIAT:
+                # REVERSE: 100k idr eth
+                return {"amount": amount, "base": target2, "convert": target1, "expr": expr_str, "is_reverse": True}
+            else:
+                # NORMAL: 1 sol eth ATAU 1 btc idr
+                return {"amount": amount, "base": target1, "convert": target2, "expr": expr_str, "is_reverse": False}
 
     # Kasus 2 kata: <expr> <coin>
     if len(parts) == 2:
@@ -211,7 +196,7 @@ def parse_query(text: str):
         coin_candidate = parts[1]
         amount = safe_eval(expr_str)
         if amount is not None:
-            return {"amount": amount, "coin": coin_candidate, "fiat": "usd", "expr": expr_str, "is_reverse": False}
+            return {"amount": amount, "base": coin_candidate, "convert": "usd", "expr": expr_str, "is_reverse": False}
 
     return None
 
@@ -221,48 +206,44 @@ def parse_query(text: str):
 
 async def handle_price_query(update: Update, q: dict):
     amount = q["amount"]
-    coin_input = q["coin"]
-    fiat = q["fiat"]
+    base_input = q["base"]
+    convert_input = q["convert"]
     original_expr = q["expr"]
     is_reverse = q["is_reverse"]
 
-    msg = await update.message.reply_text(f"Mencari {coin_input.upper()}...")
+    msg = await update.message.reply_text(f"Mencari {base_input.upper()}...")
 
-    data = get_price(coin_input, fiat)
+    # Ambil data harga
+    data = get_price(base_input, convert_input)
 
     if not data:
-        await msg.edit_text(f"{coin_input.upper()} tidak ditemukan.")
+        await msg.edit_text(f"{base_input.upper()} atau {convert_input.upper()} tidak ditemukan.")
         return
 
     price = data["price"]
     change_24h = data.get("change_24h") or 0
-    coin_display = data.get("symbol", coin_input.lower())
+    coin_display = data.get("symbol", base_input.lower())
     coin_name = data.get("name", coin_display)
 
     if is_reverse:
         # Pembalikan: Berapa coin yang didapat dari fiat
-        total_coin = amount / price
-        total_display = format_number(total_coin)
+        total_val = amount / price
         unit_display = coin_display
-        
-        # Baris kalkulasi
-        expr_html = html.escape(original_expr)
-        amount_html = html.escape(format_number(amount, is_calc=True))
-        calc_line = f"<code>{expr_html} = {amount_html}</code> {html.escape(fiat.upper())}\n"
+        calc_unit = convert_input.upper()
     else:
-        # Normal: Berapa fiat yang didapat dari coin
-        total_fiat = amount * price
-        total_display = format_number(total_fiat)
-        unit_display = fiat.lower()
-        
-        # Baris kalkulasi
-        expr_html = html.escape(original_expr)
-        amount_html = html.escape(format_number(amount, is_calc=True))
-        calc_line = f"<code>{expr_html} = {amount_html}</code> {html.escape(coin_display)}\n"
+        # Normal: Berapa convert yang didapat dari base
+        total_val = amount * price
+        unit_display = convert_input.lower()
+        calc_unit = coin_display
+
+    # Baris kalkulasi
+    expr_html = html.escape(original_expr)
+    amount_html = html.escape(format_number(amount, is_calc=True))
+    calc_line = f"<code>{expr_html} = {amount_html}</code> {html.escape(calc_unit)}\n"
 
     coin_name_html = html.escape(coin_name)
     coin_display_html = html.escape(coin_display)
-    total_html = html.escape(total_display)
+    total_html = html.escape(format_number(total_val))
     unit_html = html.escape(unit_display)
     change_html = html.escape(format_change(change_24h))
 
