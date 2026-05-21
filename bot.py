@@ -9,10 +9,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 # KONFIGURASI
 # ==============================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "")  # Opsional
+CMC_API_KEY = os.environ.get("CMC_API_KEY", "")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable tidak ditemukan!")
+if not CMC_API_KEY:
+    raise ValueError("CMC_API_KEY environment variable tidak ditemukan!")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -21,19 +23,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==============================
-# API CONFIG
+# COINMARKETCAP API CONFIG
 # ==============================
-DEXSCREENER_BASE = "https://api.dexscreener.com"
+CMC_BASE = "https://pro-api.coinmarketcap.com/v1"
 
-def cg_get(endpoint: str, params: dict = {}) -> requests.Response:
-    """Request ke CoinGecko (Pro jika ada key, free jika tidak)."""
-    if COINGECKO_API_KEY:
-        base = "https://pro-api.coingecko.com/api/v3"
-        headers = {"x-cg-pro-api-key": COINGECKO_API_KEY}
-    else:
-        base = "https://api.coingecko.com/api/v3"
-        headers = {}
-    return requests.get(f"{base}{endpoint}", params=params, headers=headers, timeout=10)
+def cmc_get(endpoint: str, params: dict = {}) -> requests.Response:
+    return requests.get(
+        f"{CMC_BASE}{endpoint}",
+        params=params,
+        headers={"X-CMC_PRO_API_KEY": CMC_API_KEY, "Accept": "application/json"},
+        timeout=10
+    )
 
 # ==============================
 # SUPPORTED FIAT
@@ -54,210 +54,106 @@ FIAT_SYMBOL = {
 }
 
 # ==============================
-# COIN ALIASES (CoinGecko ID)
-# ==============================
-COIN_ALIASES = {
-    "btc": "bitcoin", "eth": "ethereum", "bnb": "binancecoin",
-    "sol": "solana", "xrp": "ripple", "usdt": "tether",
-    "usdc": "usd-coin", "ada": "cardano", "doge": "dogecoin",
-    "trx": "tron", "dot": "polkadot", "avax": "avalanche-2",
-    "atom": "cosmos", "near": "near", "ftm": "fantom",
-    "algo": "algorand", "icp": "internet-computer", "apt": "aptos",
-    "sui": "sui", "sei": "sei-network", "inj": "injective-protocol",
-    "hbar": "hedera-hashgraph", "xlm": "stellar", "vet": "vechain",
-    "fil": "filecoin", "kas": "kaspa", "zec": "zcash", "xtz": "tezos",
-    "eos": "eos", "etc": "ethereum-classic", "bch": "bitcoin-cash",
-    "ltc": "litecoin", "xmr": "monero", "dash": "dash",
-    "matic": "matic-network", "pol": "matic-network", "arb": "arbitrum",
-    "op": "optimism", "strk": "starknet", "imx": "immutable-x",
-    "uni": "uniswap", "aave": "aave", "crv": "curve-dao-token",
-    "mkr": "maker", "cake": "pancakeswap-token", "gmx": "gmx",
-    "dydx": "dydx", "1inch": "1inch",
-    "fet": "fetch-ai", "agix": "singularitynet", "rndr": "render-token",
-    "render": "render-token", "grt": "the-graph", "wld": "worldcoin-wld",
-    "tao": "bittensor", "akt": "akash-network", "ocean": "ocean-protocol",
-    "axs": "axie-infinity", "sand": "the-sandbox", "mana": "decentraland",
-    "enj": "enjincoin", "gala": "gala",
-    "shib": "shiba-inu", "pepe": "pepe", "floki": "floki",
-    "bonk": "bonk", "wif": "dogwifcoin", "bome": "book-of-meme",
-    "popcat": "popcat",
-    "link": "chainlink", "pyth": "pyth-network", "ar": "arweave",
-    "hnt": "helium", "ton": "the-open-network", "not": "notcoin",
-    "dai": "dai", "wbtc": "wrapped-bitcoin", "steth": "staked-ether",
-    "ens": "ethereum-name-service", "pendle": "pendle",
-    "jup": "jupiter-exchange-solana", "eigen": "eigenlayer",
-    "chz": "chiliz", "bat": "basic-attention-token",
-    "okb": "okb", "cro": "crypto-com-chain", "kcs": "kucoin-shares",
-    "dogs": "dogs-2", "hmstr": "hamster-kombat",
-}
-
-# ==============================
-# FIAT CONVERSION (untuk DexScreener yang hanya punya USD)
+# COINMARKETCAP: SEARCH + PRICE
 # ==============================
 
-def get_fiat_rate(to_fiat: str) -> float:
-    """Ambil rate USD → fiat target via ExchangeRate API (gratis)."""
-    if to_fiat == "usd":
-        return 1.0
+def cmc_get_price(symbol: str, fiat: str) -> dict | None:
+    """
+    Ambil harga langsung dari CMC by symbol.
+    CMC otomatis return coin dengan rank tertinggi jika ada duplikat simbol.
+    """
     try:
-        resp = requests.get(
-            f"https://open.er-api.com/v6/latest/USD",
-            timeout=8
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["rates"].get(to_fiat.upper(), 1.0)
-    except Exception as e:
-        logger.error(f"Error fetching fiat rate for {to_fiat}: {e}")
-        return 1.0
-
-# ==============================
-# SOURCE 1: COINGECKO
-# ==============================
-
-def coingecko_search(query: str) -> str | None:
-    """Cari coin ID di CoinGecko."""
-    q = query.lower().strip()
-    if q in COIN_ALIASES:
-        return COIN_ALIASES[q]
-    try:
-        resp = cg_get("/search", {"query": q})
-        resp.raise_for_status()
-        coins = resp.json().get("coins", [])
-        if not coins:
-            return None
-        exact = [c for c in coins if c["symbol"].lower() == q]
-        if exact:
-            exact.sort(key=lambda c: c.get("market_cap_rank") or 999999)
-            return exact[0]["id"]
-        exact_name = [c for c in coins if c["name"].lower() == q]
-        if exact_name:
-            exact_name.sort(key=lambda c: c.get("market_cap_rank") or 999999)
-            return exact_name[0]["id"]
-        coins.sort(key=lambda c: c.get("market_cap_rank") or 999999)
-        return coins[0]["id"]
-    except Exception as e:
-        logger.error(f"CoinGecko search error: {e}")
-        return None
-
-def coingecko_price(coin_id: str, fiat: str) -> dict | None:
-    """Ambil harga dari CoinGecko."""
-    try:
-        resp = cg_get("/simple/price", {
-            "ids": coin_id,
-            "vs_currencies": fiat,
-            "include_24hr_change": "true",
-            "include_market_cap": "true",
-            "include_24hr_vol": "true",
+        resp = cmc_get("/cryptocurrency/quotes/latest", {
+            "symbol": symbol.upper(),
+            "convert": fiat.upper(),
         })
         resp.raise_for_status()
         data = resp.json()
-        if coin_id not in data or fiat not in data[coin_id]:
+
+        if data.get("status", {}).get("error_code", 0) != 0:
+            logger.error(f"CMC error: {data['status'].get('error_message')}")
             return None
-        d = data[coin_id]
+
+        coin_data = data.get("data", {})
+        if not coin_data:
+            return None
+
+        # CMC bisa return list jika ada duplikat simbol
+        # Ambil coin dengan rank market cap tertinggi (rank terkecil)
+        entries = coin_data.get(symbol.upper(), [])
+        if isinstance(entries, list):
+            entries = sorted(entries, key=lambda x: x.get("cmc_rank") or 999999)
+            coin = entries[0]
+        elif isinstance(entries, dict):
+            coin = entries
+        else:
+            return None
+
+        quote = coin.get("quote", {}).get(fiat.upper(), {})
+        if not quote:
+            return None
+
         return {
-            "price": d[fiat],
-            "change_24h": d.get(f"{fiat}_24h_change") or 0,
-            "market_cap": d.get(f"{fiat}_market_cap") or 0,
-            "volume_24h": d.get(f"{fiat}_24h_vol") or 0,
-            "source": "CoinGecko",
-            "coin_name": coin_id.replace("-", " ").title(),
+            "name": coin.get("name", symbol),
+            "symbol": coin.get("symbol", symbol).upper(),
+            "price": quote.get("price") or 0,
+            "change_24h": quote.get("percent_change_24h") or 0,
+            "market_cap": quote.get("market_cap") or 0,
+            "volume_24h": quote.get("volume_24h") or 0,
+            "rank": coin.get("cmc_rank"),
+            "source": "CoinMarketCap",
         }
+
     except Exception as e:
-        logger.error(f"CoinGecko price error: {e}")
+        logger.error(f"CMC price error for '{symbol}': {e}")
         return None
 
-# ==============================
-# SOURCE 2: DEXSCREENER
-# ==============================
 
-def dexscreener_search(query: str, fiat: str) -> dict | None:
+def cmc_search_by_name(query: str, fiat: str) -> dict | None:
     """
-    Cari token di DexScreener.
-    Ambil pair dengan liquiditas terbesar sebagai harga acuan.
-    Konversi ke fiat jika bukan USD.
+    Fallback: cari coin by nama via /map endpoint jika symbol tidak ketemu.
     """
     try:
-        resp = requests.get(
-            f"{DEXSCREENER_BASE}/latest/dex/search",
-            params={"q": query},
-            timeout=10
-        )
+        resp = cmc_get("/cryptocurrency/map", {
+            "listing_status": "active",
+            "sort": "cmc_rank",
+            "limit": 5000,
+        })
         resp.raise_for_status()
-        pairs = resp.json().get("pairs", [])
-        if not pairs:
+        coins = resp.json().get("data", [])
+
+        q = query.lower()
+        # Cari exact match nama dulu
+        match = next((c for c in coins if c["name"].lower() == q), None)
+        # Jika tidak ada, cari yang mengandung query
+        if not match:
+            match = next((c for c in coins if q in c["name"].lower()), None)
+        if not match:
             return None
 
-        # Filter: hanya pair yang simbolnya exact match
-        q = query.upper()
-        exact = [
-            p for p in pairs
-            if p.get("baseToken", {}).get("symbol", "").upper() == q
-        ]
-        candidates = exact if exact else pairs
+        # Sekarang ambil harga menggunakan symbol yang ditemukan
+        return cmc_get_price(match["symbol"], fiat)
 
-        # Pilih pair dengan liquiditas terbesar
-        candidates.sort(
-            key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0),
-            reverse=True
-        )
-        best = candidates[0]
-
-        price_usd = float(best.get("priceUsd") or 0)
-        if price_usd == 0:
-            return None
-
-        # Konversi ke fiat target
-        fiat_rate = get_fiat_rate(fiat)
-        price_fiat = price_usd * fiat_rate
-
-        change_24h = float(best.get("priceChange", {}).get("h24") or 0)
-        volume_24h_usd = float(best.get("volume", {}).get("h24") or 0)
-        liquidity_usd = float(best.get("liquidity", {}).get("usd") or 0)
-
-        token_name = best.get("baseToken", {}).get("name", query)
-        token_symbol = best.get("baseToken", {}).get("symbol", query)
-        chain = best.get("chainId", "").capitalize()
-        dex = best.get("dexId", "").capitalize()
-        pair_url = best.get("url", "")
-
-        return {
-            "price": price_fiat,
-            "change_24h": change_24h,
-            "market_cap": 0,  # DexScreener jarang punya market cap
-            "volume_24h": volume_24h_usd * fiat_rate,
-            "liquidity": liquidity_usd * fiat_rate,
-            "source": f"DexScreener ({chain} · {dex})",
-            "coin_name": token_name,
-            "symbol": token_symbol,
-            "pair_url": pair_url,
-        }
     except Exception as e:
-        logger.error(f"DexScreener search error: {e}")
+        logger.error(f"CMC name search error for '{query}': {e}")
         return None
 
-# ==============================
-# UNIFIED PRICE RESOLVER
-# ==============================
 
 def get_price(query: str, fiat: str) -> dict | None:
     """
-    Coba CoinGecko dulu, fallback ke DexScreener.
-    Return dict dengan data harga yang sudah dinormalisasi.
+    Resolve harga coin dari CoinMarketCap.
+    1. Coba by symbol langsung
+    2. Fallback by nama
     """
-    # --- CoinGecko ---
-    coin_id = coingecko_search(query)
-    if coin_id:
-        data = coingecko_price(coin_id, fiat)
-        if data:
-            logger.info(f"Price for '{query}' from CoinGecko ({coin_id})")
-            return data
-
-    # --- DexScreener fallback ---
-    logger.info(f"CoinGecko miss for '{query}', trying DexScreener...")
-    data = dexscreener_search(query, fiat)
+    # Step 1: coba sebagai symbol
+    data = cmc_get_price(query, fiat)
     if data:
-        logger.info(f"Price for '{query}' from DexScreener")
+        return data
+
+    # Step 2: coba sebagai nama (misal: "bitcoin", "ethereum")
+    logger.info(f"Symbol lookup miss for '{query}', trying name search...")
+    data = cmc_search_by_name(query, fiat)
+    if data:
         return data
 
     return None
@@ -310,8 +206,8 @@ async def handle_price_query(update: Update, amount: float, coin_input: str, fia
 
     if not data:
         await msg.edit_text(
-            f"❌ *{coin_input.upper()}* tidak ditemukan di CoinGecko maupun DexScreener.\n"
-            f"Coba gunakan nama lengkap atau contract address.",
+            f"❌ *{coin_input.upper()}* tidak ditemukan.\n"
+            f"Coba gunakan nama lengkap, contoh: `1 bitcoin idr`",
             parse_mode="Markdown"
         )
         return
@@ -321,45 +217,37 @@ async def handle_price_query(update: Update, amount: float, coin_input: str, fia
     change_24h = data.get("change_24h") or 0
     market_cap = data.get("market_cap") or 0
     volume_24h = data.get("volume_24h") or 0
-    liquidity = data.get("liquidity") or 0
-    source = data.get("source", "")
-    coin_display = data.get("symbol", coin_input).upper()
-    pair_url = data.get("pair_url", "")
+    rank = data.get("rank")
+    coin_display = data.get("symbol", coin_input.upper())
+    coin_name = data.get("name", coin_display)
 
     change_emoji = "🟢" if change_24h >= 0 else "🔴"
     change_sign = "+" if change_24h >= 0 else ""
+    rank_text = f"#{rank}" if rank else "-"
 
     if amount == 1:
         text = (
-            f"💰 *{coin_display} / {fiat.upper()}*\n\n"
+            f"💰 *{coin_name} ({coin_display}) / {fiat.upper()}*\n"
+            f"🏅 Rank: `{rank_text}`\n\n"
             f"💵 Harga: `{format_number(price, fiat)}`\n"
             f"{change_emoji} 24h: `{change_sign}{change_24h:.2f}%`\n"
+            f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n"
+            f"📈 Volume 24h: `{format_number(volume_24h, fiat)}`\n\n"
+            f"_Sumber: CoinMarketCap_"
         )
-        if market_cap > 0:
-            text += f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n"
-        if volume_24h > 0:
-            text += f"📈 Volume 24h: `{format_number(volume_24h, fiat)}`\n"
-        if liquidity > 0:
-            text += f"💧 Liquidity: `{format_number(liquidity, fiat)}`\n"
     else:
         text = (
-            f"💰 *{amount:g} {coin_display} → {fiat.upper()}*\n\n"
+            f"💰 *{amount:g} {coin_name} ({coin_display}) → {fiat.upper()}*\n"
+            f"🏅 Rank: `{rank_text}`\n\n"
             f"💵 Total: `{format_number(total, fiat)}`\n"
             f"📌 Harga/unit: `{format_number(price, fiat)}`\n"
             f"{change_emoji} 24h: `{change_sign}{change_24h:.2f}%`\n"
+            f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n"
+            f"📈 Volume 24h: `{format_number(volume_24h, fiat)}`\n\n"
+            f"_Sumber: CoinMarketCap_"
         )
-        if market_cap > 0:
-            text += f"📊 Market Cap: `{format_number(market_cap, fiat)}`\n"
-        if volume_24h > 0:
-            text += f"📈 Volume 24h: `{format_number(volume_24h, fiat)}`\n"
-        if liquidity > 0:
-            text += f"💧 Liquidity: `{format_number(liquidity, fiat)}`\n"
 
-    text += f"\n_Sumber: {source}_"
-    if pair_url:
-        text += f"\n[Lihat chart di DexScreener]({pair_url})"
-
-    await msg.edit_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+    await msg.edit_text(text, parse_mode="Markdown")
 
 # ==============================
 # COMMANDS
@@ -371,9 +259,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Cara pakai — cukup ketik langsung:\n\n"
         "• `1 btc` → harga BTC dalam USD\n"
         "• `2 eth idr` → harga 2 ETH dalam Rupiah\n"
-        "• `1 pepe idr` → harga PEPE dalam Rupiah\n"
-        "• `1 wojak usd` → token baru/DeFi juga bisa!\n\n"
-        "🔁 Data dari *CoinGecko* + *DexScreener*\n\n"
+        "• `1 btc idr` → harga BTC dalam Rupiah\n"
+        "• `0.5 sol eur` → harga 0.5 SOL dalam Euro\n"
+        "• `100 doge jpy` → harga 100 DOGE dalam Yen\n\n"
+        "📡 Data dari *CoinMarketCap*\n\n"
         "❓ `/help` — Bantuan\n"
         "💱 `/fiat` — Daftar mata uang\n"
     )
@@ -389,10 +278,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`0.5 sol eur` — 0.5 SOL dalam Euro\n"
         "`100 doge jpy` — 100 DOGE dalam Yen\n"
         "`1 pepe idr` — token meme\n"
-        "`1 wojak usd` — token DeFi/baru via DexScreener\n\n"
-        "*Default fiat:* USD\n\n"
-        "🔁 Bot otomatis cari di CoinGecko dulu,\n"
-        "jika tidak ada → lanjut ke DexScreener.\n\n"
+        "`1 bitcoin idr` — nama lengkap juga bisa\n\n"
+        "*Default fiat:* USD jika tidak ditulis\n\n"
         "💱 `/fiat` — Daftar mata uang yang didukung"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -405,11 +292,12 @@ async def fiat_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("VND","Dong"),("BRL","Real"),("INR","Rupee"),("CHF","Swiss Franc"),
         ("HKD","HK Dollar"),("TWD","Taiwan Dollar"),("AED","Dirham"),
         ("SAR","Riyal"),("TRY","Lira"),("RUB","Ruble"),("ZAR","Rand"),
+        ("MXN","Peso Mexico"),("PKR","Rupee Pakistan"),
     ]
     lines = ["💱 *Mata Uang Fiat yang Didukung*\n"]
     for code, name in fiat_display:
         symbol = FIAT_SYMBOL.get(code.lower(), "")
-        lines.append(f"`{code}` {symbol} — {name}")
+        lines.append(f"`{code}` {symbol}— {name}")
     lines.append("\n💡 Contoh: `1 btc idr` atau `2 eth eur`")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -439,7 +327,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("fiat", fiat_list))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logger.info("✅ Bot berjalan (CoinGecko + DexScreener)...")
+    logger.info("✅ Bot berjalan (CoinMarketCap)...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
