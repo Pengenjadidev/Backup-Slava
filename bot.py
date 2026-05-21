@@ -53,14 +53,15 @@ FIAT_SYMBOL = {
 # COIN SEARCH — langsung hit CoinGecko setiap query
 # ==============================
 
+
 def search_coin_id(query: str) -> str | None:
     """
     Cari coin ID dari CoinGecko berdasarkan simbol atau nama.
-    Hit API setiap kali dipanggil agar selalu up-to-date.
+    Hit API setiap kali — selalu up-to-date.
+    Prioritas: exact symbol/name match, diurutkan market_cap_rank terkecil.
     """
     query = query.lower().strip()
     try:
-        # Gunakan endpoint /search untuk pencarian fleksibel
         resp = requests.get(
             f"{COINGECKO_BASE}/search",
             params={"query": query},
@@ -74,22 +75,26 @@ def search_coin_id(query: str) -> str | None:
         if not coins:
             return None
 
-        # Prioritas 1: cocok persis dengan simbol
-        for coin in coins:
-            if coin["symbol"].lower() == query:
-                return coin["id"]
+        # Prioritas 1: exact match simbol → pilih market_cap_rank terkecil (paling populer)
+        exact_symbol = [c for c in coins if c["symbol"].lower() == query]
+        if exact_symbol:
+            exact_symbol.sort(key=lambda c: c.get("market_cap_rank") or 999999)
+            return exact_symbol[0]["id"]
 
-        # Prioritas 2: cocok persis dengan nama
-        for coin in coins:
-            if coin["name"].lower() == query:
-                return coin["id"]
+        # Prioritas 2: exact match nama → pilih market_cap_rank terkecil
+        exact_name = [c for c in coins if c["name"].lower() == query]
+        if exact_name:
+            exact_name.sort(key=lambda c: c.get("market_cap_rank") or 999999)
+            return exact_name[0]["id"]
 
-        # Prioritas 3: hasil pertama dari pencarian
+        # Prioritas 3: partial match → sort by market_cap_rank
+        coins.sort(key=lambda c: c.get("market_cap_rank") or 999999)
         return coins[0]["id"]
 
     except Exception as e:
         logger.error(f"Error searching coin '{query}': {e}")
         return None
+
 
 
 def get_coin_price(coin_id: str, vs_currency: str = "usd") -> dict | None:
