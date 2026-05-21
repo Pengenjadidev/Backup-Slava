@@ -2,7 +2,9 @@ import logging
 import os
 import re
 import requests
+import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # ==============================
@@ -126,23 +128,18 @@ def get_price(query: str, fiat: str) -> dict | None:
 # HELPERS
 # ==============================
 
-def escape_markdown(text: str) -> str:
-    """Escape reserved characters for Telegram MarkdownV2"""
-    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(text))
-
 def format_number(n: float) -> str:
     if n == 0:
         return "0"
     elif n >= 1000:
         # Format: 1.234.567,89
-        res = f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     elif n >= 1:
-        res = f"{n:,.2f}".replace(".", ",")
+        return f"{n:,.2f}".replace(".", ",")
     elif n >= 0.0001:
-        res = f"{n:.6f}".replace(".", ",")
+        return f"{n:.6f}".replace(".", ",")
     else:
-        res = f"{n:.10f}".replace(".", ",")
-    return res
+        return f"{n:.10f}".replace(".", ",")
 
 def format_change(change: float) -> str:
     sign = "+" if change >= 0 else ""
@@ -214,44 +211,39 @@ async def handle_price_query(update: Update, amount: float, coin_input: str, fia
     coin_display = data.get("symbol", coin_input.lower())
     coin_name = data.get("name", coin_display)
 
-    # Escape semua teks yang bukan bagian dari tag Markdown
-    coin_name_esc = escape_markdown(coin_name)
-    coin_display_esc = escape_markdown(coin_display)
-    fiat_esc = escape_markdown(fiat.lower())
+    # Gunakan HTML agar lebih stabil
+    coin_name_html = html.escape(coin_name)
+    coin_display_html = html.escape(coin_display)
+    fiat_html = html.escape(fiat.lower())
     
     if original_expr and not original_expr.replace(".", "").replace(",", "").isdigit():
-        expr_esc = escape_markdown(original_expr)
-        res_esc = escape_markdown(format_number(amount))
-        calc_line = f"`{expr_esc} = {res_esc}` {coin_display_esc}\n"
+        expr_html = html.escape(original_expr)
+        res_html = html.escape(format_number(amount))
+        calc_line = f"<code>{expr_html} = {res_html}</code> {coin_display_html}\n"
     else:
         calc_line = ""
 
-    total_esc = escape_markdown(format_number(total))
-    change_esc = escape_markdown(format_change(change_24h))
+    total_html = html.escape(format_number(total))
+    change_html = html.escape(format_change(change_24h))
 
     text = (
-        f"{coin_name_esc} ({coin_display_esc}):\n"
+        f"{coin_name_html} ({coin_display_html}):\n"
         f"{calc_line}"
-        f"`{total_esc}` {fiat_esc}        |`{change_esc}`"
+        f"<code>{total_html}</code> {fiat_html}        |<code>{change_html}</code>"
     )
 
     chart_url = f"https://coinmarketcap.com/currencies/{coin_name.lower().replace(' ', '-')}/"
     keyboard = [[InlineKeyboardButton("View Chart", url=chart_url)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    try:
-        await msg.edit_text(text, reply_markup=reply_markup, parse_mode="MarkdownV2")
-    except Exception as e:
-        logger.error(f"Error editing message: {e}")
-        # Fallback jika MarkdownV2 gagal
-        await msg.edit_text(f"Error displaying data. Please try again.")
+    await msg.edit_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
 
 async def handle_calculator(update: Update, text: str):
     result = safe_eval(text)
     if result is not None:
-        expr_esc = escape_markdown(text)
-        res_esc = escape_markdown(format_number(result))
-        await update.message.reply_text(f"`{expr_esc} = {res_esc}`", parse_mode="MarkdownV2")
+        expr_html = html.escape(text)
+        res_html = html.escape(format_number(result))
+        await update.message.reply_text(f"<code>{expr_html} = {res_html}</code>", parse_mode=ParseMode.HTML)
         return True
     return False
 
